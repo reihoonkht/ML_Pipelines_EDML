@@ -17,7 +17,7 @@ from utils import get_project_root
 
 project_root = get_project_root()
 
-raw_data_file = os.path.join(project_root, "datasets", "adult_data", "adult_data.csv")
+raw_data_file = os.path.join(project_root, "datasets", "first_dataset", "first_dataset.csv")
 data = pd.read_csv(raw_data_file)
 
 X = data.drop('salary', axis=1)
