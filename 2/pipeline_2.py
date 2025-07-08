@@ -17,7 +17,7 @@ from utils import get_project_root
 
 project_root = get_project_root()
 
-raw_data_file = os.path.join(project_root, "datasets", "compas_scores", "compas-scores-two-years.csv")
+raw_data_file = os.path.join(project_root, "datasets", "second_dataset", "second_dataset.csv")
 raw_data = pd.read_csv(raw_data_file)
 
 raw_data = raw_data[
