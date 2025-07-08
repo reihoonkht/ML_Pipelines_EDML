@@ -1,57 +1,77 @@
 import os
 import sys
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
 import numpy as np
 
-# Path setup
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
+# ... path setup ...
 
-from utils import get_project_root
+# Load data
+raw_data_file = os.path.join(project_root, "datasets", "second_dataset", "second_dataset.csv")
+raw_data = pd.read_csv(raw_data_file)
 
-project_root = get_project_root()
+# Select meaningful features (remove data leakage)
+feature_columns = ['sex', 'age', 'c_charge_degree', 'race', 'priors_count', 'days_b_screening_arrest']
+target_column = 'score_text'
 
-# FIXED: Add error handling for data loading
-try:
-    raw_data_file = os.path.join(project_root, "datasets", "first_dataset", "first_dataset.csv")
-    data = pd.read_csv(raw_data_file)
+# Extract features and target BEFORE any filtering
+X = raw_data[feature_columns].copy()
+y = raw_data[target_column].copy()
+
+print(f"Original dataset: {len(X)} records")
+
+# FIXED: Train-test split FIRST
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+# FIXED: Apply filtering AFTER split and only to training data if needed
+# Document the rationale for filtering
+def apply_data_quality_filters(X, y, filter_name=""):
+    """Apply data quality filters with clear documentation"""
+    original_size = len(X)
     
-    if data.empty:
-        raise ValueError("Dataset is empty")
+    # Filter 1: Remove extreme values in days_b_screening_arrest
+    # Rationale: Values beyond ±30 days may indicate data quality issues
+    mask = (X['days_b_screening_arrest'] >= -30) & (X['days_b_screening_arrest'] <= 30)
+    X_filtered = X[mask]
+    y_filtered = y[mask]
     
-    print(f"Loaded dataset with {len(data)} records and {len(data.columns)} features")
+    removed = original_size - len(X_filtered)
+    print(f"{filter_name} - Removed {removed} records ({removed/original_size*100:.1f}%) due to extreme days_b_screening_arrest")
     
-except Exception as e:
-    print(f"Error loading data: {e}")
-    sys.exit(1)
+    return X_filtered, y_filtered
 
-# FIXED: Validate target variable exists
-if 'salary' not in data.columns:
-    print("Error: 'salary' column not found in dataset")
-    sys.exit(1)
+# Apply filtering to training data only
+X_train_filtered, y_train_filtered = apply_data_quality_filters(X_train, y_train, "Training")
 
-# Prepare features and target
-X = data.drop('salary', axis=1)
-y = data['salary']
+# For test data, decide whether to filter or keep all data
+# Option 1: Filter test data the same way (recommended for consistency)
+X_test_filtered, y_test_filtered = apply_data_quality_filters(X_test, y_test, "Test")
 
-print(f"Target distribution:\n{y.value_counts()}")
+# Option 2: Keep all test data to evaluate on full distribution
+# X_test_filtered, y_test_filtered = X_test, y_test
 
-# FIXED: More robust feature type detection
-categorical_features = X.select_dtypes(include=['object', 'category']).columns.tolist()
-numerical_features = X.select_dtypes(include=['int64', 'float64']).columns.tolist()
+# FIXED: Keep original 3-class problem (remove representational bias)
+# y_train_filtered = y_train_filtered.replace('Medium', 'Low')  # REMOVED
+# y_test_filtered = y_test_filtered.replace('Medium', 'Low')    # REMOVED
 
-print(f"Categorical features ({len(categorical_features)}): {categorical_features}")
-print(f"Numerical features ({len(numerical_features)}): {numerical_features}")
+print(f"Training data after filtering: {len(X_train_filtered)} records")
+print(f"Test data after filtering: {len(X_test_filtered)} records")
 
-# FIXED: Proper preprocessing with scaling and imputation
+print("\nTarget distribution in training data:")
+print(y_train_filtered.value_counts())
+
+# Define preprocessing
+categorical_features = ['sex', 'c_charge_degree', 'race']
+numeric_features = ['age', 'priors_count', 'days_b_screening_arrest']
+
 preprocessor = ColumnTransformer(
     transformers=[
         ('cat', Pipeline([
@@ -60,130 +80,35 @@ preprocessor = ColumnTransformer(
         ]), categorical_features),
         ('num', Pipeline([
             ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())  # FIXED: Add scaling for numerical features
-        ]), numerical_features)
-    ],
-    remainder='drop'  
+            ('scaler', StandardScaler())
+        ]), numeric_features)
+    ]
 )
 
-# FIXED: Proper pipeline definition
+# Create pipeline (NO data leakage)
 pipeline = Pipeline([
     ('preprocessor', preprocessor),
-    ('model', RandomForestClassifier(random_state=42, n_estimators=100))  # FIXED: Add random_state
+    ('classifier', LogisticRegression(random_state=42, max_iter=1000, multi_class='ovr'))
 ])
 
-# Train-test split
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
-)
+# Fit only on training data
+pipeline.fit(X_train_filtered, y_train_filtered)
 
-print(f"Training set: {len(X_train)} samples")
-print(f"Test set: {len(X_test)} samples")
+# Evaluate
+train_score = pipeline.score(X_train_filtered, y_train_filtered)
+test_score = pipeline.score(X_test_filtered, y_test_filtered)
 
-# Train model
-try:
-    pipeline.fit(X_train, y_train)
-    print("Model training completed successfully")
-except Exception as e:
-    print(f"Error during training: {e}")
-    sys.exit(1)
+print(f"\nTraining accuracy: {train_score:.3f}")
+print(f"Testing accuracy: {test_score:.3f}")
 
-# Evaluate on clean data
-y_pred = pipeline.predict(X_test)
-accuracy_before_noise = accuracy_score(y_test, y_pred)
-
-print(f"\n=== CLEAN DATA PERFORMANCE ===")
-print(f"Accuracy: {accuracy_before_noise:.4f}")
+y_pred = pipeline.predict(X_test_filtered)
 print("\nClassification Report:")
-print(classification_report(y_test, y_pred))
+print(classification_report(y_test_filtered, y_pred, zero_division=0))
 
-# FIXED: Principled robustness testing
-def add_scaled_noise(X_test, noise_levels=[0.1, 0.2, 0.5], random_seed=42):
-    """
-    Add scaled noise to numerical features for robustness testing.
-    
-    Args:
-        X_test: Test data
-        noise_levels: List of noise levels as fraction of feature std
-        random_seed: Random seed for reproducibility
-    
-    Returns:
-        Dictionary of noisy datasets
-    """
-    np.random.seed(random_seed)
-    
-    # Get numerical columns that actually exist in the data
-    numerical_cols = X_test.select_dtypes(include=['int64', 'float64']).columns
-    
-    if len(numerical_cols) == 0:
-        print("Warning: No numerical columns found for noise addition")
-        return {}
-    
-    # Calculate feature-specific noise scales
-    feature_stds = X_test[numerical_cols].std()
-    
-    noisy_datasets = {}
-    
-    for noise_level in noise_levels:
-        X_noisy = X_test.copy()
-        
-        # Add proportional noise to each numerical feature
-        for col in numerical_cols:
-            noise_std = feature_stds[col] * noise_level
-            noise = np.random.normal(0, noise_std, len(X_noisy))
-            X_noisy[col] = X_noisy[col] + noise
-            
-            # FIXED: Ensure realistic values (e.g., age can't be negative)
-            if col == 'age':
-                X_noisy[col] = np.clip(X_noisy[col], 0, 120)
-            elif col in ['capital-gain', 'capital-loss']:
-                X_noisy[col] = np.clip(X_noisy[col], 0, None)  # Can't be negative
-            elif col == 'hours-per-week':
-                X_noisy[col] = np.clip(X_noisy[col], 0, 168)  # Max hours in a week
-        
-        noisy_datasets[noise_level] = X_noisy
-    
-    return noisy_datasets
-
-# Test robustness with multiple noise levels
-print(f"\n=== ROBUSTNESS TESTING ===")
-noise_levels = [0.05, 0.1, 0.2, 0.3]  # 5%, 10%, 20%, 30% of feature std
-noisy_datasets = add_scaled_noise(X_test, noise_levels)
-
-robustness_results = []
-
-for noise_level, X_noisy in noisy_datasets.items():
-    try:
-        y_pred_noisy = pipeline.predict(X_noisy)
-        accuracy_noisy = accuracy_score(y_test, y_pred_noisy)
-        accuracy_drop = accuracy_before_noise - accuracy_noisy
-        
-        robustness_results.append({
-            'noise_level': noise_level,
-            'accuracy': accuracy_noisy,
-            'accuracy_drop': accuracy_drop,
-            'relative_drop': accuracy_drop / accuracy_before_noise * 100
-        })
-        
-        print(f"Noise level {noise_level*100:4.1f}%: Accuracy = {accuracy_noisy:.4f} "
-              f"(drop: {accuracy_drop:.4f}, {accuracy_drop/accuracy_before_noise*100:.1f}%)")
-              
-    except Exception as e:
-        print(f"Error with noise level {noise_level}: {e}")
-
-# Summary
-print(f"\n=== ROBUSTNESS SUMMARY ===")
-print(f"Baseline accuracy: {accuracy_before_noise:.4f}")
-
-if robustness_results:
-    max_drop = max(result['relative_drop'] for result in robustness_results)
-    print(f"Maximum relative accuracy drop: {max_drop:.1f}%")
-    
-    if max_drop < 5:
-        print("✅ Model shows good robustness to noise")
-    elif max_drop < 15:
-        print("⚠️  Model shows moderate robustness to noise")
-    else:
-        print("❌ Model shows poor robustness to noise")
-else:
-    print("❌ Robustness testing failed")
+# Fairness check
+print("\nFairness Check - Predictions by Race:")
+test_results = X_test_filtered.copy()
+test_results['true_label'] = y_test_filtered
+test_results['predicted_label'] = y_pred
+fairness_check = pd.crosstab(test_results['race'], test_results['predicted_label'], normalize='index') * 100
+print(fairness_check.round(1))     
